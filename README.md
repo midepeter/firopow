@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Full FiroPOW verification algorithm implementation 
 
 The FIROPOW is a PROGPOW variant(basic PROGPOW with a twist). The twist happens when the change   
@@ -16,3 +17,4 @@ KISS 99 calculations
 2. Make appropriate twist and tune init FiroPoW
 3. Make appropriate tuning of the values
 4. Testing (Build a simple blockchain)
+
