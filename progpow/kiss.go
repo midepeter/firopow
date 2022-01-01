@@ -16,7 +16,7 @@ func New(z, w, jsr, jcong uint32) *kiss99 {
 	}
 }
 
-//Pseudorandom
+//Pseudorandom number generator
 func (k *kiss99) Next() uint32 {
 	k.z = 36969*(k.z&65535) + (k.z >> 16)
 	k.w = 18000*(k.w&65535) + (k.w >> 16)

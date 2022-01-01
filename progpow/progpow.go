@@ -96,7 +96,7 @@ func math(a, b, r uint32) uint32 {
 	return 0
 }
 
-func ProgPOWInit(hash []byte, nonce uint64) ([25]uint32, uint64) {
+func ProgPowInit(hash []byte, nonce uint64) ([25]uint32, uint64) {
 	var seed [25]uint32
 	for i := 0; i < 8; i += 1 {
 		seed[i] = binary.LittleEndian.Uint32(hash[i*4 : i*4+4])
@@ -112,27 +112,6 @@ func ProgPOWInit(hash []byte, nonce uint64) ([25]uint32, uint64) {
 	return seed, seedHead
 }
 
-func initMix(seed uint64, numLanes, numRegs int) [][]uint32 {
-	z := Fnv1a(fnvoffSetBasis, uint32(seed))
-	w := Fnv1a(z, uint32(seed>>32))
-
-	mix := make([][]uint32, numLanes)
-
-	for lane := range mix {
-		jsr := Fnv1a(w, uint32(lane))
-		jcong := Fnv1a(jsr, uint32(lane<<32))
-
-		rng := New(z, w, jsr, jcong)
-
-		mix[lane] = make([]uint32, numRegs)
-		for reg := range mix[lane] {
-			mix[lane][reg] = rng.Next()
-		}
-	}
-
-	return mix
-}
-
 func max(a, b int) int {
 	if a < b {
 		return b
@@ -141,7 +120,7 @@ func max(a, b int) int {
 }
 
 func round(seed uint64, r uint32, mix [][]uint32, datasetSize uint64, lookup LookupFunc, l1 []uint32) [][]uint32 {
-	state := fill_mix_init(seed, uint32(RegisterCount))
+	state := fill_mix(seed, uint32(RegisterCount))
 	numItems := uint32(datasetSize / (2 * 128))
 	itemIndex := mix[r%uint32(LaneCount)][0] % numItems
 
@@ -181,6 +160,7 @@ func round(seed uint64, r uint32, mix [][]uint32, datasetSize uint64, lookup Loo
 		}
 	}
 
+	//DAG access pattern
 	dsts := make([]uint32, numWordsPerLane)
 	sels := make([]uint32, numWordsPerLane)
 	for i := 0; i < numWordsPerLane; i++ {
@@ -203,8 +183,29 @@ func round(seed uint64, r uint32, mix [][]uint32, datasetSize uint64, lookup Loo
 	return mix
 }
 
-func Hash(cfg, height, seed, datasetSize uint64, lookup LookupFunc, l1 []uint32) []byte {
-	mix := initMix(seed, LaneCount, RegisterCount)
+func initMix(seed uint64) [][]uint32 {
+	z := Fnv1a(fnvoffSetBasis, uint32(seed))
+	w := Fnv1a(z, uint32(seed>>32))
+
+	mix := make([][]uint32, LaneCount)
+
+	for lane := range mix {
+		jsr := Fnv1a(w, uint32(lane))
+		jcong := Fnv1a(jsr, uint32(lane<<32))
+
+		rng := New(z, w, jsr, jcong)
+
+		mix[lane] = make([]uint32, RegisterCount)
+		for reg := range mix[lane] {
+			mix[lane][reg] = rng.Next()
+		}
+	}
+
+	return mix
+}
+
+func Hash(height, seed, datasetSize uint64, lookup LookupFunc, l1 []uint32) []byte {
+	mix := initMix(seed)
 
 	number := height / uint64(PeriodLength)
 	for i := 0; i < RoundCount; i++ {
@@ -233,7 +234,7 @@ func Hash(cfg, height, seed, datasetSize uint64, lookup LookupFunc, l1 []uint32)
 	return utils.Uint32ArrayToBytesLE(mixHash)
 }
 
-func finalize(seed [25]uint32, mixHash []byte) []byte {
+func Final_hash(seed [25]uint32, mixHash []byte) []byte {
 	var state [25]uint32
 	for i := 0; i < 8; i++ {
 		state[i] = seed[i]
