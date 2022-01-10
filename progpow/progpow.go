@@ -19,13 +19,12 @@ var (
 )
 
 const (
-	fnvOffsetBasis uint32 = 0x811c9dc5
+	fnvoffSetBasis uint32 = 0x811c9dc5
 	progpowRegs    uint32 = 32
 	progpowLanes   uint32 = 16
-	fnvoffSetBasis uint32 = 0x811c9dc5
 )
 
-type LookupFunc func(index uint32) []uint32
+type LookupFunc func(index uint32) []byte
 
 func rotl32(a, b uint32) uint32 {
 	return a<<(b&31) | a>>((32-b)&31)
@@ -47,21 +46,19 @@ func mul_hi32(a, b uint32) uint32 {
 	return uint32((uint64(a) * uint64(b)) >> 32)
 }
 
-func merge(a, b, selector uint32) uint32 {
-	x := ((selector >> 16) % 31) + 1
+func merge(a, b, r uint32) {
+	x := ((r >> 16) % 31) + 1
 
-	switch selector % 4 {
+	switch r % 4 {
 	case 0:
-		return (a * 33) + b
+		a = (a * 33) + b
 	case 1:
-		return (a ^ b) * 33
+		a = (a ^ b) * 33
 	case 2:
-		return rotl32(a, x) ^ b
+		a = rotl32(a, x) ^ b
 	case 3:
-		return rotr32(a, x) ^ b
+		a = rotr32(a, x) ^ b
 	}
-
-	return 0
 }
 
 func math(a, b, r uint32) uint32 {
@@ -96,22 +93,6 @@ func math(a, b, r uint32) uint32 {
 	return 0
 }
 
-func ProgPowInit(hash []byte, nonce uint64) ([25]uint32, uint64) {
-	var seed [25]uint32
-	for i := 0; i < 8; i += 1 {
-		seed[i] = binary.LittleEndian.Uint32(hash[i*4 : i*4+4])
-	}
-
-	seed[8] = uint32(nonce)
-	seed[9] = uint32(nonce >> 32)
-
-	keccak.KeccakF800(&seed)
-
-	seedHead := uint64(seed[0]) + (uint64(seed[1]) << 32)
-
-	return seed, seedHead
-}
-
 func max(a, b int) int {
 	if a < b {
 		return b
@@ -119,15 +100,15 @@ func max(a, b int) int {
 	return a
 }
 
-func round(seed uint64, r uint32, mix [][]uint32, datasetSize uint64, lookup LookupFunc, l1 []uint32) [][]uint32 {
+func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, lookup LookupFunc, loop uint32, cDag []uint32) {
 	state := fill_mix(seed, uint32(RegisterCount))
 	numItems := uint32(datasetSize / (2 * 128))
-	itemIndex := mix[r%uint32(LaneCount)][0] % numItems
-
+	itemIndex := mix_array[r%uint32(LaneCount)][0] % numItems
 	item := lookup(itemIndex)
 
 	numWordsPerLane := len(item) / LaneCount
 	maxOperations := max(RoundMathOperations, RoundMathOperations)
+	//for l := uint32(0); l < progpowLanes; l++ {
 	for i := 0; i < maxOperations; i++ {
 		if i < RoundCacheAccesses {
 			dst := state.nextDst()
@@ -135,8 +116,9 @@ func round(seed uint64, r uint32, mix [][]uint32, datasetSize uint64, lookup Loo
 			sel := state.nextRng()
 
 			for l := 0; l < LaneCount; l++ {
-				offset := mix[l][src] % (uint32(CacheBytes) / 4)
-				mix[l][dst] = merge(mix[l][src], l1[offset], sel)
+				offset := mix_array[l][src] % (uint32(CacheBytes) / 4)
+				data32 := cDag[offset]
+				merge(mix_array[l][dst], data32, sel)
 			}
 		}
 
@@ -154,36 +136,34 @@ func round(seed uint64, r uint32, mix [][]uint32, datasetSize uint64, lookup Loo
 			sel1 := state.nextRng()
 
 			for l := 0; l < LaneCount; l++ {
-				data := math(mix[l][src1], mix[l][src2], sel1)
-				mix[l][dst] = merge(mix[l][dst], data, sel2)
+				data := math(mix_array[l][src1], mix_array[l][src2], sel1)
+				merge(mix_array[l][dst], data, sel2)
 			}
 		}
 	}
 
-	//DAG access pattern
+	//DAG ACCESS PATTERN
 	dsts := make([]uint32, numWordsPerLane)
 	sels := make([]uint32, numWordsPerLane)
 	for i := 0; i < numWordsPerLane; i++ {
 		if i == 0 {
 			dsts[i] = 0
-		} else {
-			dsts[i] = state.nextDst()
 		}
-
+		dsts[i] = state.nextDst()
 		sels[i] = state.nextRng()
 	}
 
-	for l := 0; l < LaneCount; l++ {
-		offset := ((uint32(l) ^ r) % uint32(LaneCount)) * uint32(numWordsPerLane)
-		for i := 0; i < numWordsPerLane; i++ {
-			word := item[offset+uint32(i)]
-			mix[l][dsts[i]] = merge(mix[l][dsts[i]], word, sels[i])
+	//DAG access
+	for k := 0; k < LaneCount; k++ {
+		offset := ((k ^ int(r)) % LaneCount) * numWordsPerLane
+		for j := 0; j < numWordsPerLane; j++ {
+			word := binary.LittleEndian.Uint32()
+			merge(mix_array[k][dsts[j]], word, sels[j])
 		}
 	}
-	return mix
 }
 
-func initMix(seed uint64) [][]uint32 {
+func init_mix(seed uint64) [][]uint32 {
 	z := Fnv1a(fnvoffSetBasis, uint32(seed))
 	w := Fnv1a(z, uint32(seed>>32))
 
@@ -200,21 +180,20 @@ func initMix(seed uint64) [][]uint32 {
 			mix[lane][reg] = rng.Next()
 		}
 	}
-
 	return mix
 }
 
-func Hash(height, seed, datasetSize uint64, lookup LookupFunc, l1 []uint32) []byte {
-	mix := initMix(seed)
+func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, loop uint32, cDag []uint32) []byte {
+	mix := init_mix(seed)
 
 	number := height / uint64(PeriodLength)
 	for i := 0; i < RoundCount; i++ {
-		mix = round(number, uint32(i), mix, datasetSize, lookup, l1)
+		round(number, uint32(i), mix, datasetSize, lookup, loop, cDag)
 	}
 
 	laneHash := make([]uint32, LaneCount)
 	for l := range laneHash {
-		laneHash[l] = fnvOffsetBasis
+		laneHash[l] = fnvoffSetBasis
 
 		for i := 0; i < RegisterCount; i++ {
 			laneHash[l] = Fnv1a(laneHash[l], mix[l][i])
@@ -224,7 +203,7 @@ func Hash(height, seed, datasetSize uint64, lookup LookupFunc, l1 []uint32) []by
 	numWords := 8
 	mixHash := make([]uint32, numWords)
 	for i := 0; i < numWords; i++ {
-		mixHash[i] = fnvOffsetBasis
+		mixHash[i] = fnvoffSetBasis
 	}
 
 	for l := 0; l < LaneCount; l++ {
@@ -234,7 +213,12 @@ func Hash(height, seed, datasetSize uint64, lookup LookupFunc, l1 []uint32) []by
 	return utils.Uint32ArrayToBytesLE(mixHash)
 }
 
-func Final_hash(seed [25]uint32, mixHash []byte) []byte {
+/* func hash_seed(nonce uint64, header_hash [25]uint32) {
+	nonce_data := utils.Uint64ToBytesLE(nonce)
+
+} */
+
+func hash_final(seed [25]uint32, mixHash []byte) []byte {
 	var state [25]uint32
 	for i := 0; i < 8; i++ {
 		state[i] = seed[i]

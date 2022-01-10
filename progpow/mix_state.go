@@ -10,13 +10,13 @@ type mixState struct {
 
 func (m mixState) nextDst() uint32 {
 	val := m.DstSeq[m.DstCounter%progpowRegs]
-	m.DstCounter++
+	m.DstCounter += 1
 	return val
 }
 
 func (m mixState) nextSrc() uint32 {
 	val := m.SrcSeq[m.SrcCounter%progpowRegs]
-	m.SrcCounter++
+	m.SrcCounter += 1
 	return val
 }
 
@@ -27,7 +27,7 @@ func (s mixState) nextRng() uint32 {
 func fill_mix(seed uint64, size uint32) *mixState {
 	var z, w, jsr, jcong uint32
 
-	z = Fnv1a(fnvOffsetBasis, uint32(seed))
+	z = Fnv1a(fnvoffSetBasis, uint32(seed))
 	w = Fnv1a(z, uint32(seed>>32))
 	jsr = Fnv1a(w, uint32(seed))
 	jcong = Fnv1a(jsr, uint32(seed>>32))
@@ -42,6 +42,7 @@ func fill_mix(seed uint64, size uint32) *mixState {
 		srcSeq[i] = i
 	}
 
+	//Using Fisher-Yates Shuffle
 	for i := uint32(progpowRegs); i > 1; i-- {
 		dstInd := rng.Next() % i
 		dstSeq[i-1], dstSeq[dstInd] = dstSeq[dstInd], dstSeq[i-1]
