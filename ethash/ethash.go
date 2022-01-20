@@ -6,11 +6,15 @@ import (
 	"log"
 	"math/big"
 	"reflect"
+	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 
 	"firo/firopow-go/utils"
+
+	"firo/firopow-go/progpow"
 
 	"golang.org/x/crypto/sha3"
 )
@@ -22,6 +26,7 @@ const (
 	epoch_length          = 30000   //Blocks per epoch
 	hashBytes             = 64
 	maxEpoch              = 2048
+	datasetParents        = 256
 )
 
 func cacheSize(block uint64) uint64 {
@@ -67,11 +72,6 @@ func keccak256(seed []byte) []byte {
 	return hash.Sum(nil)
 }
 
-/* func keccak512(seed []byte) []byte {
-	hash := makeHasher(sha3.NewLegacyKeccak512())
-
-} */
-
 //seedHash is the seed used for generating verification cache
 func seedHash(block uint64) []byte {
 	seed := make([]byte, 32)
@@ -94,8 +94,11 @@ func swap(buf []byte) {
 }
 
 func isLittleEndian() bool {
-	return false
+	n := uint32(0x01020304)
+	return *(*byte)(unsafe.Pointer(&n)) == 0x04
 }
+
+var keccak512 hasher = makeHasher(sha3.NewLegacyKeccak512())
 
 func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 	start := time.Now()
@@ -120,6 +123,8 @@ func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 	done := make(chan []struct{})
 	defer close(done)
 
+	keccak512(cache, seed)
+
 	go func() {
 		for {
 			select {
@@ -130,9 +135,6 @@ func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 			}
 		}
 	}()
-
-	keccak512 := makeHasher(sha3.NewLegacyKeccak512())
-	keccak512(cache, seed)
 
 	for offset := uint64(hashBytes); offset < size; offset += hashBytes {
 		keccak512(cache[offset:], cache[offset-hashBytes:offset])
@@ -148,7 +150,8 @@ func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 				dstOff = j * hashBytes
 				xorOff = (binary.LittleEndian.Uint32(cache[dstOff:]) % uint32(rows)) * hashBytes
 			)
-			utils.XORBytes(temp, cache[srcOff:srcOff+dstOff+hashBytes], cache[xorOff:xorOff+hashBytes])
+
+			utils.XORBytes(temp, cache[srcOff:srcOff+hashBytes], cache[xorOff:xorOff+hashBytes])
 			keccak512(cache[dstOff:], temp)
 
 			atomic.AddUint32(&progress, 1)
@@ -158,6 +161,80 @@ func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 	if !isLittleEndian() {
 		swap(cache)
 	}
+}
+
+const hashWords = 16
+
+func generateDatasetItem(cache []uint32, index uint32, keccak512 hasher) []byte {
+	rows := uint32(len(cache) / hashWords)
+
+	mix := make([]byte, hashBytes)
+	binary.LittleEndian.PutUint32(mix, cache[(index%rows)*hashWords^index])
+	for i := 1; i < hashWords; i++ {
+		binary.LittleEndian.PutUint32(mix[i*4:], cache[(index%rows)*hashWords+uint32(i)])
+	}
+
+	keccak512(mix, mix)
+
+	//Convert to uint32s to avoid constant bit shifting
+	intMix := make([]uint32, hashWords)
+	for i := uint(0); i < hashWords; i++ {
+		intMix[i] = binary.LittleEndian.Uint32(mix[i*4:])
+	}
+
+	for i := uint32(0); i < datasetParents; i++ {
+		parent := progpow.Fnv1(index^i, intMix[i%16]) % rows
+		progpow.FnvHash(intMix, cache[parent*hashWords:])
+	}
+
+	for i, val := range intMix {
+		binary.LittleEndian.PutUint32(mix[i*4:], val)
+	}
+	keccak512(mix, mix)
+	return mix
+}
+
+func GenerateDataset(dst []uint32, epoch uint64, cache []uint32) {
+	swapped := !isLittleEndian()
+
+	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dst))
+	header.Len *= 4
+	header.Cap *= 4
+	dataset := *(*[]byte)(unsafe.Pointer(&header))
+
+	threads := runtime.NumCPU()
+	size := uint64(len(dataset))
+
+	var pend sync.WaitGroup
+	pend.Add(threads)
+
+	var progress uint32
+	for i := 0; i < threads; i++ {
+		go func(id int) {
+			defer pend.Done()
+
+			batch := uint32((size + hashBytes*uint64(threads) - 1) / (hashBytes * uint64(threads)))
+			first := uint32(id) * batch
+			limit := first + batch
+			if limit > uint32(size/hashBytes) {
+				limit = uint32(size / hashBytes)
+			}
+
+			percent := uint32(size / hashBytes / 100)
+			for index := first; index < limit; index++ {
+				item := generateDatasetItem(cache, index, keccak512)
+				if swapped {
+					swap(item)
+				}
+
+				copy(dataset[index*hashBytes:], item)
+				if status := atomic.AddUint32(&progress, 1); status%percent == 0 {
+					log.Println("Generateing DAG in progress", "percentage")
+				}
+			}
+		}(i)
+	}
+	pend.Wait()
 }
 
 var cacheSizes = [maxEpoch]uint64{

@@ -4,13 +4,13 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"runtime"
 	"strconv"
 	"unsafe"
 )
 
 const wordSize = int(unsafe.Sizeof(uintptr(0)))
-const supportsUnaligned = runtime.GOARCH == "386" || runtime.GOARCH == "amd64" || runtime.GOARCH == "ppc64" || runtime.GOARCH == "ppc64le" || runtime.GOARCH == "s390x"
+
+//const supportsUnaligned = runtime.GOARCH == "386" || runtime.GOARCH == "amd64" || runtime.GOARCH == "ppc64" || runtime.GOARCH == "ppc64le" || runtime.GOARCH == "s390x"
 
 func Convertuint32ArrTobyte(arr []uint32) []byte {
 	buf := make([]byte, len(arr)*4)
@@ -41,10 +41,10 @@ func Uint64ToBytesLE(val uint64) []byte {
 }
 
 func XORBytes(dst, a, b []byte) int {
-	if supportsUnaligned {
-		return fastXORBytes(dst, a, b)
-	}
-	return safeXORBytes(dst, a, b)
+	// if supportsUnaligned {
+	return fastXORBytes(dst, a, b)
+	// }
+	// return safeXORBytes(dst, a, b)
 }
 
 func fastXORBytes(dst, a, b []byte) int {
@@ -67,7 +67,7 @@ func fastXORBytes(dst, a, b []byte) int {
 	return n
 }
 
-func safeXORBytes(dst, a, b []byte) int {
+/* func safeXORBytes(dst, a, b []byte) int {
 	n := len(a)
 	if len(b) < n {
 		n = len(b)
@@ -76,7 +76,7 @@ func safeXORBytes(dst, a, b []byte) int {
 		dst[i] = a[i] ^ b[i]
 	}
 	return n
-}
+} */
 
 func Decode(input string) ([]byte, error) {
 	if len(input) == 0 {
