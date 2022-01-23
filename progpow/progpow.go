@@ -100,7 +100,7 @@ func max(a, b int) int {
 	return a
 }
 
-func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, lookup LookupFunc, loop uint32, cDag []uint32) {
+func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, lookup LookupFunc, cDag []uint32) {
 	state := fill_mix(seed, uint32(RegisterCount))
 	numItems := uint32(datasetSize / (2 * 128))
 	itemIndex := mix_array[r%uint32(LaneCount)][0] % numItems
@@ -113,7 +113,7 @@ func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, look
 		if i < RoundCacheAccesses {
 			dst := state.nextDst()
 			src := state.nextSrc()
-			sel := state.nextRng()
+			sel := state.rng()
 
 			for l := 0; l < LaneCount; l++ {
 				offset := mix_array[l][src] % (uint32(CacheBytes) / 4)
@@ -123,7 +123,7 @@ func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, look
 		}
 
 		if i < RoundMathOperations {
-			srcRand := state.nextRng() % (uint32(RegisterCount) * uint32(RegisterCount-1))
+			srcRand := state.rng() % (uint32(RegisterCount) * uint32(RegisterCount-1))
 			src1 := srcRand % uint32(RegisterCount)
 			src2 := srcRand / uint32(RegisterCount)
 
@@ -133,7 +133,7 @@ func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, look
 
 			dst := state.nextDst()
 			sel2 := state.nextSrc()
-			sel1 := state.nextRng()
+			sel1 := state.rng()
 
 			for l := 0; l < LaneCount; l++ {
 				data := math(mix_array[l][src1], mix_array[l][src2], sel1)
@@ -150,14 +150,14 @@ func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, look
 			dsts[i] = 0
 		}
 		dsts[i] = state.nextDst()
-		sels[i] = state.nextRng()
+		sels[i] = state.rng()
 	}
 
 	//DAG access
 	for k := 0; k < LaneCount; k++ {
 		offset := ((k ^ int(r)) % LaneCount) * numWordsPerLane
 		for j := 0; j < numWordsPerLane; j++ {
-			word := binary.LittleEndian.Uint32()
+			word := binary.LittleEndian.Uint32(item[offset:])
 			merge(mix_array[k][dsts[j]], word, sels[j])
 		}
 	}
@@ -183,12 +183,12 @@ func init_mix(seed uint64) [][]uint32 {
 	return mix
 }
 
-func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, loop uint32, cDag []uint32) []byte {
+func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, cDag []uint32) []byte {
 	mix := init_mix(seed)
 
 	number := height / uint64(PeriodLength)
 	for i := 0; i < RoundCount; i++ {
-		round(number, uint32(i), mix, datasetSize, lookup, loop, cDag)
+		round(number, uint32(i), mix, datasetSize, lookup, cDag)
 	}
 
 	laneHash := make([]uint32, LaneCount)
@@ -213,12 +213,7 @@ func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, loop uint32, 
 	return utils.Uint32ArrayToBytesLE(mixHash)
 }
 
-/* func hash_seed(nonce uint64, header_hash [25]uint32) {
-	nonce_data := utils.Uint64ToBytesLE(nonce)
-
-} */
-
-func hash_final(seed [25]uint32, mixHash []byte) []byte {
+func Hash_final(seed [25]uint32, mixHash []byte) []byte {
 	var state [25]uint32
 	for i := 0; i < 8; i++ {
 		state[i] = seed[i]

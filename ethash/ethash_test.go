@@ -77,7 +77,7 @@ func TestCacheGeneration(t *testing.T) {
 	}
 	for i, tt := range tests {
 		cache := make([]uint32, tt.size/4)
-		GenerateCache(cache, tt.epoch, seedHash(tt.epoch*epoch_length+1))
+		GenerateCache(cache, tt.epoch, SeedHash(tt.epoch*epoch_length+1))
 
 		want := make([]uint32, tt.size/4)
 		prepare(want, tt.cache)

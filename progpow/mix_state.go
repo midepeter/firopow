@@ -20,7 +20,7 @@ func (m mixState) nextSrc() uint32 {
 	return val
 }
 
-func (s mixState) nextRng() uint32 {
+func (s mixState) rng() uint32 {
 	return s.Rng.Next()
 }
 

@@ -73,7 +73,7 @@ func keccak256(seed []byte) []byte {
 }
 
 //seedHash is the seed used for generating verification cache
-func seedHash(block uint64) []byte {
+func SeedHash(block uint64) []byte {
 	seed := make([]byte, 32)
 	if block < epoch_length {
 		return seed
