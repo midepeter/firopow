@@ -165,7 +165,7 @@ func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 
 const hashWords = 16
 
-func generateDatasetItem(cache []uint32, index uint32, keccak512 hasher) []byte {
+func GenerateDatasetItem(cache []uint32, index uint32, keccak512 hasher) []byte {
 	rows := uint32(len(cache) / hashWords)
 
 	mix := make([]byte, hashBytes)
@@ -222,7 +222,7 @@ func GenerateDataset(dst []uint32, epoch uint64, cache []uint32) {
 
 			percent := uint32(size / hashBytes / 100)
 			for index := first; index < limit; index++ {
-				item := generateDatasetItem(cache, index, keccak512)
+				item := GenerateDatasetItem(cache, index, keccak512)
 				if swapped {
 					swap(item)
 				}

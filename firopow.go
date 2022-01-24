@@ -30,12 +30,19 @@ func newBlock() Block {
 
 func Sum(b Block) (*big.Int, error) {
 	seed_hash := ethash.SeedHash(b.Nonce)
+	var seed uint64 = 2048
 	var cache []uint32
 	var dataset []uint32
+
 	ethash.GenerateCache(cache, b.Height, seed_hash)
 	ethash.GenerateDataset(dataset, b.Height, cache)
-	//lookup := func(dst []byte)[]byte
-	mix_hash := progpow.Hash_mix(b.Height, seed_hash)
+
+	lookup := func(dst uint32) []byte {
+		res := make([]byte, 1024)
+		binary.LittleEndian.PutUint32(res, dataset[dst])
+		return res
+	}
+	mix_hash := progpow.Hash_mix(b.Height, seed, 2048, lookup, dataset)
 	final_hash := progpow.Hash_final(seed_hash, mix_hash)
 	final_int := binary.BigEndian.Uint64(final_hash)
 	return big.NewInt(int64(final_int)), nil

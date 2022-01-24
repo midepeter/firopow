@@ -213,7 +213,7 @@ func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, cDag []uint32
 	return utils.Uint32ArrayToBytesLE(mixHash)
 }
 
-func Hash_final(seed [25]uint32, mixHash []byte) []byte {
+func Hash_final(seed []byte, mixHash []byte) []byte {
 	var state [25]uint32
 	for i := 0; i < 8; i++ {
 		state[i] = seed[i]
