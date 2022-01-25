@@ -213,12 +213,36 @@ func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, cDag []uint32
 	return utils.Uint32ArrayToBytesLE(mixHash)
 }
 
-func Hash_final(seed []byte, mixHash []byte) []byte {
+func Hash_seed(header_hash []byte, nonce uint64) [25]uint32 {
+	var state [25]uint32
+
+	for i := 0; i < 8; i++ {
+		state[i] = binary.LittleEndian.Uint32(header_hash[i*4 : i*4+4])
+	}
+
+	state[8] = uint32(nonce)
+	state[9] = uint32(nonce >> 32)
+	state[10] = 0x00000001
+	state[18] = 0x80008081
+
+	keccak.KeccakF800(&state)
+	// seedHead := uint64(state[0]) + (uint64(state[1]) << 32)
+
+	//seedHead := utils.Uint32ArrayToBytesLE(state[:8])
+
+	return state
+
+}
+
+func Hash_final(seed [25]uint32, mixHash []byte) []byte {
 	var state [25]uint32
 	for i := 0; i < 8; i++ {
 		state[i] = seed[i]
 		state[i+8] = binary.LittleEndian.Uint32(mixHash[i*4 : i*4+4])
 	}
+
+	state[17] = 0x00000001
+	state[24] = 0x80008081
 
 	keccak.KeccakF800(&state)
 

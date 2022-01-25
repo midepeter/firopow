@@ -1,4 +1,4 @@
-package firopow
+package main
 
 import (
 	"encoding/binary"
@@ -12,23 +12,12 @@ type Block struct {
 	Target     string
 	Header     string
 	Nonce      uint64
-	Difficulty uint64
 	PrevHash   string
 	Height     uint64
-	SeedHash   [25]uint32
+	Difficulty string
 }
 
-func newBlock() Block {
-	return Block{
-		Target:   " ",
-		Header:   " ",
-		Nonce:    0x85f22c9b3cd2f123,
-		PrevHash: " ",
-		Height:   1,
-	}
-}
-
-func Sum(b Block) (*big.Int, error) {
+func HashSum(b Block) (*big.Int, error) {
 	seed_hash := ethash.SeedHash(b.Nonce)
 	var seed uint64 = 2048
 	var cache []uint32
@@ -43,7 +32,8 @@ func Sum(b Block) (*big.Int, error) {
 		return res
 	}
 	mix_hash := progpow.Hash_mix(b.Height, seed, 2048, lookup, dataset)
-	final_hash := progpow.Hash_final(seed_hash, mix_hash)
+	seedhash := progpow.Hash_seed([]byte(b.Header), b.Nonce)
+	final_hash := progpow.Hash_final(seedhash, mix_hash)
 	final_int := binary.BigEndian.Uint64(final_hash)
 	return big.NewInt(int64(final_int)), nil
 }
