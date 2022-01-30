@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
-	"hash"
 	"math/big"
 
 	"firo/firopow-go/ethash"
@@ -22,22 +21,31 @@ type Block struct {
 func HashSum(b Block) (*big.Int, error) {
 	var seedHead uint64 = 2048
 	var seed [25]uint32
-	var cache []uint32
+	cache := make([]uint32, 1024/4)
 	var dataset []uint32
 
 	seed, _ = progpow.Hash_seed(b.Header, b.Nonce)
+	fmt.Println(seed)
 	ethash.GenerateCache(cache, b.Height, seed)
 	ethash.CacheSize(b.Nonce)
+	epoch := ethash.CalcEpoch(b.Height)
+	datasetSize := ethash.CalculateDatasetSize(epoch)
 
 	look := func(data []uint32, index uint32) progpow.LookupFunc {
-		var h hash.Hash
-		hasher := ethash.MakeHasher(h)
-		lookup := func(data []uint32, ndex uint32) []uint32 {
-			return ethash.GenerateDataset(data, uint32(len(data)), 4, hasher)
+		//var h hash.Hash
+		keccak512hasher := ethash.NewKeccak512hasher()
+		lookup := func(data []uint32, index uint32) []uint32 {
+			return ethash.GenerateDataset(data, uint32(len(data)), index, keccak512hasher)
 		}
+		dataset = lookup(cache, 5)
+		fmt.Println(dataset)
 		return lookup
 	}
-	mix_hash := progpow.Hash_mix(b.Height, seedHead, uint64(len(dataset)), look(cache, 4), dataset)
+
+	l1 := make([]uint32, 1280)
+	ethash.GenerateL1Cache(l1, cache)
+	fmt.Println("iteml1", l1)
+	mix_hash := progpow.Hash_mix(b.Height, seedHead, datasetSize, look(cache, uint32(100)), l1)
 	final_hash := progpow.Hash_final(seed, mix_hash)
 	final_int := binary.BigEndian.Uint64(final_hash)
 	fmt.Println(final_hash)
