@@ -23,14 +23,14 @@ const (
 	light_cache_init_size = 1 << 24 //Bytes in cache at genesis
 	light_cache_growth    = 1 << 17 // Cache growth per epoch
 	light_cache_rounds    = 3       // Number of rounds in cache production
-	epoch_length          = 3
+	epoch_length          = 30000
 	datasetInitBytes      = 1 << 24
 	datasetGrowthBytes    = 1 << 17
 	mixBytes              = 128
 	hashBytes             = 64
 	maxEpoch              = 2048
 	datasetParents        = 256
-	hashwords             = 256
+	hashwords             = 16
 )
 
 func CacheSize(block uint64) uint64 {
@@ -206,7 +206,7 @@ func generateDatasetItem(cache []uint32, index uint32, keccak512 hasher) []byte 
 	rows := uint32(len(cache) / hashWords)
 
 	mix := make([]byte, hashBytes)
-	binary.LittleEndian.PutUint32(mix, cache[(index%rows)*hashWords^index])
+	//binary.LittleEndian.PutUint32(mix, cache[(index%rows)*hashWords^index])
 	for i := 1; i < hashWords; i++ {
 		binary.LittleEndian.PutUint32(mix[i*4:], cache[(index%rows)*hashWords+uint32(i)])
 	}

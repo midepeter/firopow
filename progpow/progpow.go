@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"firo/firopow-go/keccak"
 	"firo/firopow-go/utils"
-	"fmt"
 	"math/bits"
 )
 
@@ -118,7 +117,6 @@ func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, look
 
 			for l := 0; l < LaneCount; l++ {
 				offset := mix_array[l][src] % (uint32(CacheBytes) / 4)
-				fmt.Println("offset: ", offset)
 				data32 := cDag[offset]
 				merge(mix_array[l][dst], data32, sel)
 			}
