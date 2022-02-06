@@ -1,9 +1,7 @@
 package ethash
 
 import (
-	"bytes"
 	"encoding/binary"
-	"fmt"
 	"hash"
 	"log"
 	"math/big"
@@ -21,15 +19,15 @@ import (
 
 const (
 	light_cache_init_size = 1 << 24 //Bytes in cache at genesis
-	light_cache_growth    = 1 << 17 // Cache growth per epoch
+	light_cache_growth    = 1 << 23 // Cache growth per epoch
 	light_cache_rounds    = 3       // Number of rounds in cache production
-	epoch_length          = 30000
-	datasetInitBytes      = 1 << 24
+	epoch_length          = 1300
+	datasetInitBytes      = (1 << 30) + (1 << 29)
 	datasetGrowthBytes    = 1 << 17
 	mixBytes              = 128
 	hashBytes             = 64
 	maxEpoch              = 2048
-	datasetParents        = 256
+	datasetParents        = 512
 	hashwords             = 16
 )
 
@@ -55,7 +53,7 @@ func CalcEpoch(h uint64) uint64 {
 	return epoch
 }
 
-func CalculateDatasetSize(epoch uint64) uint64 {
+func DatasetSize(epoch uint64) uint64 {
 	if datasetSizes == nil && epoch < maxEpoch {
 		return datasetSizes[epoch]
 	}
@@ -66,7 +64,6 @@ func CalculateDatasetSize(epoch uint64) uint64 {
 func calcDatasetSize(epoch uint64) uint64 {
 	size := datasetInitBytes + datasetGrowthBytes*epoch - mixBytes
 
-	// Always accurate for n < 2^64
 	for !new(big.Int).SetUint64(size / mixBytes).ProbablyPrime(1) {
 		size -= 2 * mixBytes
 	}
@@ -89,7 +86,7 @@ func MakeHasher(h hash.Hash) hasher {
 	return func(dest []byte, data []byte) {
 		rh.Reset()
 		rh.Write(data)
-		rh.Read(data[:outputLen])
+		rh.Read(dest[:outputLen])
 	}
 }
 
@@ -101,13 +98,13 @@ func keccak256(seed []byte) []byte {
 }
 
 //seedHash is the seed used for generating verification cache
-func SeedHash(block uint64) []byte {
+func SeedHash(height uint64) []byte {
 	seed := make([]byte, 32)
-	if block < epoch_length {
+	if height < epoch_length {
 		return seed
 	}
 
-	for i := 0; i < int(block/epoch_length); i++ {
+	for i := 0; i < int(height/epoch_length); i++ {
 		keccak256(seed)
 	}
 
@@ -131,7 +128,7 @@ func NewKeccak512hasher() hasher {
 
 var keccak512 hasher = MakeHasher(sha3.NewLegacyKeccak512())
 
-func GenerateCache(dest []uint32, epoch uint64, seed [25]uint32) {
+func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 	start := time.Now()
 
 	defer func() {
@@ -154,13 +151,7 @@ func GenerateCache(dest []uint32, epoch uint64, seed [25]uint32) {
 	done := make(chan []struct{})
 	defer close(done)
 
-	Buf := new(bytes.Buffer)
-	err := binary.Write(Buf, binary.LittleEndian, seed)
-	if err != nil {
-		fmt.Errorf("failed to write to buffer %s", err)
-	}
-
-	keccak512(cache, Buf.Bytes())
+	keccak512(cache, seed)
 
 	go func() {
 		for {
@@ -206,7 +197,7 @@ func generateDatasetItem(cache []uint32, index uint32, keccak512 hasher) []byte 
 	rows := uint32(len(cache) / hashWords)
 
 	mix := make([]byte, hashBytes)
-	//binary.LittleEndian.PutUint32(mix, cache[(index%rows)*hashWords^index])
+	binary.LittleEndian.PutUint32(mix, cache[(index%rows)*hashWords]^index)
 	for i := 1; i < hashWords; i++ {
 		binary.LittleEndian.PutUint32(mix[i*4:], cache[(index%rows)*hashWords+uint32(i)])
 	}
@@ -243,7 +234,7 @@ func GenerateDataset(cache []uint32, size, index uint32, keccak512 hasher) []uin
 	return dataset
 }
 
-func GenerateL1Cache(dest []uint32, cache []uint32) []byte {
+func GenerateL1Cache(dest []uint32, cache []uint32) {
 	keccak512Hasher := NewKeccak512hasher()
 
 	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
@@ -258,7 +249,6 @@ func GenerateL1Cache(dest []uint32, cache []uint32) []byte {
 		item := generateDatasetItem(cache, uint32(i), keccak512Hasher)
 		copy(l1[i*hashBytes:], item)
 	}
-	return l1
 }
 
 var cacheSizes = [maxEpoch]uint64{

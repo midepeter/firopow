@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/big"
 
 	"firo/firopow-go/ethash"
@@ -18,16 +20,19 @@ type Block struct {
 }
 
 func HashSum(Header []byte, Nonce uint64, Height uint64) (*big.Int, error) {
-	var seedHead uint64 = 2048
 	var seed [25]uint32
-	cache := make([]uint32, 4056*4)
 
-	seed, _ = progpow.Hash_seed(Header, Nonce)
-	ethash.GenerateCache(cache, 3, seed)
-	ethash.CacheSize(Nonce)
+	seed, SeedHash := progpow.Hash_seed(Header, Nonce)
 
 	epoch := ethash.CalcEpoch(Height)
-	datasetSize := ethash.CalculateDatasetSize(epoch)
+	size := ethash.CacheSize(epoch)
+	fmt.Println("Cache size: ", size)
+	cache := make([]uint32, size/4)
+
+	seedByte := ethash.SeedHash(Height)
+
+	ethash.GenerateCache(cache, epoch, seedByte)
+	datasetSize := ethash.DatasetSize(epoch)
 
 	look := func(data []uint32, index uint32) progpow.LookupFunc {
 		keccak512hasher := ethash.NewKeccak512hasher()
@@ -39,8 +44,11 @@ func HashSum(Header []byte, Nonce uint64, Height uint64) (*big.Int, error) {
 
 	l1 := make([]uint32, 4096*4)
 	ethash.GenerateL1Cache(l1, cache)
-	mix_hash := progpow.Hash_mix(Height, seedHead, datasetSize, look(cache, 4), l1)
+	fmt.Println("Dataset size", datasetSize)
+	mix_hash := progpow.Hash_mix(Height, SeedHash, datasetSize, look(cache, uint32(epoch)), l1)
+	fmt.Println("The value of the mix hash is", hex.EncodeToString(mix_hash))
 	final_hash := progpow.Hash_final(seed, mix_hash)
+	fmt.Println("The encoded value of the hash is ", hex.EncodeToString(final_hash))
 	final_int := binary.BigEndian.Uint64(final_hash)
 	return big.NewInt(int64(final_int)), nil
 }

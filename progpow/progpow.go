@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"firo/firopow-go/keccak"
 	"firo/firopow-go/utils"
+	"fmt"
 	"math/bits"
 )
 
@@ -103,7 +104,9 @@ func max(a, b int) int {
 func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, lookup LookupFunc, cDag []uint32) {
 	state := fill_mix(seed, uint32(RegisterCount))
 	numItems := uint32(datasetSize / (2 * 128))
+
 	itemIndex := mix_array[r%uint32(LaneCount)][0] % numItems
+
 	item := lookup(cDag, itemIndex)
 
 	numWordsPerLane := len(item) / LaneCount
@@ -187,6 +190,7 @@ func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, cDag []uint32
 	mix := init_mix(seed)
 
 	number := height / uint64(PeriodLength)
+	fmt.Println("Here 1")
 	for i := 0; i < RoundCount; i++ {
 		round(number, uint32(i), mix, datasetSize, lookup, cDag)
 	}

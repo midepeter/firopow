@@ -14,16 +14,16 @@ func TestVerify(t *testing.T) {
 		Difficulty float64
 	}{
 		{
-			Header:     "1d695cf4cd0eee3dcb981486238f900f13efad15793cc35b326eaa33579bbd06",
-			Nonce:      447435,
-			Height:     447435,
-			Difficulty: 8125.83461514,
+			Header:     "5a085fb8be7e0f10cbeb45a1deda25abfef270e12a203c7dfb020aac0723fa7c",
+			Nonce:      0xf3e95657f2470e38,
+			Height:     265000,
+			Difficulty: 5676.51423654,
 		},
 		{
-			Header:     "7ae08b7120eac2738e2279c927cf0db9909505d158b13a2f18640abdfb640beb",
-			Nonce:      447433,
-			Height:     447433,
-			Difficulty: 8125.83461514,
+			Header:     "2c128024a0274ec45f773fa878e0f9efc309ebc4864e63346931fb0a80ec9f1e",
+			Nonce:      0xf63c14518f7a9067,
+			Height:     48653,
+			Difficulty: 58493.72502553,
 		},
 	}
 
