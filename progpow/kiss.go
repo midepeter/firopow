@@ -7,7 +7,7 @@ type kiss99 struct {
 	jcong uint32
 }
 
-func New(z, w, jsr, jcong uint32) *kiss99 {
+func NewKiss(z, w, jsr, jcong uint32) *kiss99 {
 	return &kiss99{
 		z,
 		w,

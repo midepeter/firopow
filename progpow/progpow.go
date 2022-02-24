@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	PeriodLength        = 10
+	PeriodLength        = 1
 	DagLoads            = 4
 	CacheBytes          = 16 * 1024
 	LaneCount           = 16
@@ -25,7 +25,7 @@ const (
 	progpowLanes   uint32 = 16
 )
 
-type LookupFunc func(data []uint32, index uint32) []uint32
+type LookupFunc func(index uint32) []uint32
 
 func rotl32(a, b uint32) uint32 {
 	return a<<(b&31) | a>>((32-b)&31)
@@ -101,22 +101,22 @@ func max(a, b int) int {
 	return a
 }
 
-func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, lookup LookupFunc, cDag []uint32) {
-	state := fill_mix(seed, uint32(RegisterCount))
+func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, lookup LookupFunc, cDag []uint32) [][]uint32 {
+	state := Fill_mix(seed, uint32(RegisterCount))
 	numItems := uint32(datasetSize / (2 * 128))
 
 	itemIndex := mix_array[r%uint32(LaneCount)][0] % numItems
 
-	item := lookup(cDag, itemIndex)
+	item := lookup(itemIndex)
 
 	numWordsPerLane := len(item) / LaneCount
-	maxOperations := max(RoundMathOperations, RoundMathOperations)
+	maxOperations := max(RoundCacheAccesses, RoundMathOperations)
 
 	for i := 0; i < maxOperations; i++ {
 		if i < RoundCacheAccesses {
 			dst := state.nextDst()
 			src := state.nextSrc()
-			sel := state.rng()
+			sel := state.Rng()
 
 			for l := 0; l < LaneCount; l++ {
 				offset := mix_array[l][src] % (uint32(CacheBytes) / 4)
@@ -126,17 +126,17 @@ func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, look
 		}
 
 		if i < RoundMathOperations {
-			srcRand := state.rng() % (uint32(RegisterCount) * uint32(RegisterCount-1))
+			srcRand := state.Rng() % (uint32(RegisterCount) * uint32(RegisterCount-1))
 			src1 := srcRand % uint32(RegisterCount)
 			src2 := srcRand / uint32(RegisterCount)
 
-			if src1 >= src2 {
+			if src2 >= src1 {
 				src2 += 1
 			}
 
+			sel1 := state.Rng()
 			dst := state.nextDst()
-			sel2 := state.nextSrc()
-			sel1 := state.rng()
+			sel2 := state.Rng()
 
 			for l := 0; l < LaneCount; l++ {
 				data := math(mix_array[l][src1], mix_array[l][src2], sel1)
@@ -151,19 +151,21 @@ func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, look
 	for i := 0; i < numWordsPerLane; i++ {
 		if i == 0 {
 			dsts[i] = 0
+		} else {
+			dsts[i] = state.nextDst()
 		}
-		dsts[i] = state.nextDst()
-		sels[i] = state.rng()
+		sels[i] = state.Rng()
 	}
 
 	//DAG access
 	for k := 0; k < LaneCount; k++ {
-		offset := ((k ^ int(r)) % LaneCount) * numWordsPerLane
+		offset := ((uint32(k) ^ r) % uint32(LaneCount)) * uint32(numWordsPerLane)
 		for j := 0; j < numWordsPerLane; j++ {
-			word := item[offset+j]
+			word := item[offset+uint32(j)]
 			merge(mix_array[k][dsts[j]], word, sels[j])
 		}
 	}
+	return mix_array
 }
 
 func init_mix(seed uint64) [][]uint32 {
@@ -174,9 +176,9 @@ func init_mix(seed uint64) [][]uint32 {
 
 	for lane := range mix {
 		jsr := Fnv1a(w, uint32(lane))
-		jcong := Fnv1a(jsr, uint32(lane<<32))
+		jcong := Fnv1a(jsr, uint32(lane))
 
-		rng := New(z, w, jsr, jcong)
+		rng := NewKiss(z, w, jsr, jcong)
 
 		mix[lane] = make([]uint32, RegisterCount)
 		for reg := range mix[lane] {
@@ -190,9 +192,9 @@ func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, cDag []uint32
 	mix := init_mix(seed)
 
 	number := height / uint64(PeriodLength)
-	fmt.Println("Here 1")
+
 	for i := 0; i < RoundCount; i++ {
-		round(number, uint32(i), mix, datasetSize, lookup, cDag)
+		mix = round(number, uint32(i), mix, datasetSize, lookup, cDag)
 	}
 
 	laneHash := make([]uint32, LaneCount)
@@ -214,13 +216,15 @@ func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, cDag []uint32
 		mixHash[l%numWords] = Fnv1a(mixHash[l%numWords], laneHash[l])
 	}
 
+	fmt.Println("Mix_hash", mixHash)
+
 	return utils.Uint32ArrayToBytesLE(mixHash)
 }
 
 func Hash_seed(header_hash []byte, nonce uint64) ([25]uint32, uint64) {
 	var state [25]uint32
 
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 8; i += 1 {
 		state[i] = binary.LittleEndian.Uint32(header_hash[i*4 : i*4+4])
 	}
 
@@ -229,6 +233,7 @@ func Hash_seed(header_hash []byte, nonce uint64) ([25]uint32, uint64) {
 	state[10] = 0x00000001
 	state[18] = 0x80008081
 
+	fmt.Println("state", state)
 	keccak.KeccakF800(&state)
 	seedHead := uint64(state[0]) + (uint64(state[1]) << 32)
 

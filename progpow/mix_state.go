@@ -1,30 +1,33 @@
 package progpow
 
-type mixState struct {
-	DstCounter uint32
-	SrcCounter uint32
-	Rng        *kiss99
-	SrcSeq     [progpowRegs]uint32
-	DstSeq     [progpowRegs]uint32
+type mixRngState struct {
+	size        uint32
+	srcCounter  uint32
+	dstCounter  uint32
+	srcSequence []uint32
+	dstSequence []uint32
+	rng         *kiss99
 }
 
-func (m mixState) nextDst() uint32 {
-	val := m.DstSeq[m.DstCounter%progpowRegs]
-	m.DstCounter += 1
+func (s *mixRngState) nextSrc() uint32 {
+	val := s.srcSequence[s.srcCounter%s.size]
+	s.srcCounter++
+
 	return val
 }
 
-func (m mixState) nextSrc() uint32 {
-	val := m.SrcSeq[m.SrcCounter%progpowRegs]
-	m.SrcCounter += 1
+func (s *mixRngState) nextDst() uint32 {
+	val := s.dstSequence[s.dstCounter%s.size]
+	s.dstCounter++
+
 	return val
 }
 
-func (s mixState) rng() uint32 {
-	return s.Rng.Next()
+func (s *mixRngState) Rng() uint32 {
+	return s.rng.Next()
 }
 
-func fill_mix(seed uint64, size uint32) *mixState {
+func Fill_mix(seed uint64, size uint32) *mixRngState {
 	var z, w, jsr, jcong uint32
 
 	z = Fnv1a(fnvoffSetBasis, uint32(seed))
@@ -32,18 +35,16 @@ func fill_mix(seed uint64, size uint32) *mixState {
 	jsr = Fnv1a(w, uint32(seed))
 	jcong = Fnv1a(jsr, uint32(seed>>32))
 
-	rng := New(z, w, jsr, jcong)
+	rng := NewKiss(z, w, jsr, jcong)
 
-	var srcSeq [progpowRegs]uint32
-	var dstSeq [progpowRegs]uint32
-
-	for i := uint32(0); i < progpowRegs; i++ {
+	srcSeq := make([]uint32, size)
+	dstSeq := make([]uint32, size)
+	for i := uint32(0); i < size; i++ {
 		dstSeq[i] = i
 		srcSeq[i] = i
 	}
 
-	//Using Fisher-Yates Shuffle
-	for i := uint32(progpowRegs); i > 1; i-- {
+	for i := size; i > 1; i-- {
 		dstInd := rng.Next() % i
 		dstSeq[i-1], dstSeq[dstInd] = dstSeq[dstInd], dstSeq[i-1]
 
@@ -51,5 +52,14 @@ func fill_mix(seed uint64, size uint32) *mixState {
 		srcSeq[i-1], srcSeq[srcInd] = srcSeq[srcInd], srcSeq[i-1]
 	}
 
-	return &mixState{0, 0, rng, srcSeq, dstSeq}
+	state := &mixRngState{
+		size:        size,
+		srcCounter:  0,
+		dstCounter:  0,
+		srcSequence: srcSeq,
+		dstSequence: dstSeq,
+		rng:         rng,
+	}
+
+	return state
 }

@@ -2,6 +2,7 @@ package ethash
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash"
 	"log"
 	"math/big"
@@ -23,12 +24,14 @@ const (
 	light_cache_rounds    = 3       // Number of rounds in cache production
 	epoch_length          = 1300
 	datasetInitBytes      = (1 << 30) + (1 << 29)
-	datasetGrowthBytes    = 1 << 17
+	datasetGrowthBytes    = 1 << 23
 	mixBytes              = 128
 	hashBytes             = 64
 	maxEpoch              = 2048
 	datasetParents        = 512
-	hashwords             = 16
+	hashWords             = 16
+	CacheByte             = 16 * 1024
+	progpowCacheWords     = CacheByte / 4
 )
 
 func CacheSize(block uint64) uint64 {
@@ -94,7 +97,7 @@ func keccak256(seed []byte) []byte {
 	hash := sha3.NewLegacyKeccak256()
 	hash.Write(seed)
 
-	return hash.Sum(nil)
+	return hash.Sum(seed)
 }
 
 //seedHash is the seed used for generating verification cache
@@ -104,8 +107,10 @@ func SeedHash(height uint64) []byte {
 		return seed
 	}
 
+	keccak256 := MakeHasher(sha3.NewLegacyKeccak256())
+
 	for i := 0; i < int(height/epoch_length); i++ {
-		keccak256(seed)
+		keccak256(seed, seed)
 	}
 
 	return seed
@@ -129,13 +134,6 @@ func NewKeccak512hasher() hasher {
 var keccak512 hasher = MakeHasher(sha3.NewLegacyKeccak512())
 
 func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
-	start := time.Now()
-
-	defer func() {
-		elapsed := time.Since(start)
-
-		log.Println(elapsed)
-	}()
 
 	//converting our destination slice to a byte buffer
 	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
@@ -166,7 +164,6 @@ func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 
 	for offset := uint64(hashBytes); offset < size; offset += hashBytes {
 		keccak512(cache[offset:], cache[offset-hashBytes:offset])
-		atomic.AddUint32(&progress, 1)
 	}
 
 	temp := make([]byte, hashBytes)
@@ -191,9 +188,7 @@ func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 	}
 }
 
-const hashWords = 16
-
-func generateDatasetItem(cache []uint32, index uint32, keccak512 hasher) []byte {
+func GenerateDatasetItem(cache []uint32, index uint32, keccak512 hasher) []byte {
 	rows := uint32(len(cache) / hashWords)
 
 	mix := make([]byte, hashBytes)
@@ -206,7 +201,7 @@ func generateDatasetItem(cache []uint32, index uint32, keccak512 hasher) []byte 
 
 	//Convert to uint32s to avoid constant bit shifting
 	intMix := make([]uint32, hashWords)
-	for i := uint(0); i < hashWords; i++ {
+	for i := uint32(0); i < uint32(len(intMix)); i++ {
 		intMix[i] = binary.LittleEndian.Uint32(mix[i*4:])
 	}
 
@@ -222,22 +217,43 @@ func generateDatasetItem(cache []uint32, index uint32, keccak512 hasher) []byte 
 	return mix
 }
 
-func GenerateDataset(cache []uint32, size, index uint32, keccak512 hasher) []uint32 {
-	dataset := make([]uint32, uint32(hashwords)*size)
-	for j := 0; j < int(size); j++ {
-		item := generateDatasetItem(cache, index*size+uint32(j), keccak512)
-		for i := 0; i < hashwords; i++ {
-			dataset[j*hashwords+i] = binary.LittleEndian.Uint32(item[i*4:])
+func GenerateCDag(cDag, cache []uint32, epoch uint64) {
+	if cDag == nil {
+		return
+	}
+	//start := time.Now()
+	keccak512 := MakeHasher(sha3.NewLegacyKeccak512())
+
+	for i := uint32(0); i < progpowCacheWords/16; i++ {
+		rawData := GenerateDatasetItem(cache, i, keccak512)
+		// 64 bytes in rawData -> 16 uint32
+		for j := uint32(0); j < 16; j++ {
+			cDag[i*16+j] = binary.LittleEndian.Uint32(rawData[4*j:])
 		}
 	}
 
-	return dataset
+}
+
+func GenerateDatasetItemUint(cache []uint32, index, size uint32, keccak512Hasher hasher) []uint32 {
+	data := make([]uint32, hashWords*size)
+	for n := 0; n < int(size); n++ {
+		item := GenerateDatasetItem(cache, index*size+uint32(n), keccak512Hasher)
+
+		for i := 0; i < hashWords; i++ {
+			data[n*hashWords+i] = binary.LittleEndian.Uint32(item[i*4:])
+		}
+	}
+
+	return data
 }
 
 func GenerateL1Cache(dest []uint32, cache []uint32) {
 	keccak512Hasher := NewKeccak512hasher()
 
 	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
+	fmt.Println("The Length header is: ", header.Len)
+	fmt.Println("The Length header is: ", header.Len)
+
 	header.Len *= 4
 	header.Cap *= 4
 	l1 := *(*[]byte)(unsafe.Pointer(&header))
@@ -246,7 +262,7 @@ func GenerateL1Cache(dest []uint32, cache []uint32) {
 	rows := int(size) / hashBytes
 
 	for i := 0; i < rows; i++ {
-		item := generateDatasetItem(cache, uint32(i), keccak512Hasher)
+		item := GenerateDatasetItem(cache, uint32(i), keccak512Hasher)
 		copy(l1[i*hashBytes:], item)
 	}
 }
