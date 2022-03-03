@@ -27,7 +27,7 @@ func (s *mixRngState) Rng() uint32 {
 	return s.rng.Next()
 }
 
-func Fill_mix(seed uint64, size uint32) *mixRngState {
+func initState(seed uint64, size uint32) *mixRngState {
 	var z, w, jsr, jcong uint32
 
 	z = Fnv1a(fnvoffSetBasis, uint32(seed))

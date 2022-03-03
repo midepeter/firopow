@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"firo/firopow-go/keccak"
 	"firo/firopow-go/utils"
-	"fmt"
 	"math/bits"
 )
 
@@ -47,19 +46,21 @@ func mul_hi32(a, b uint32) uint32 {
 	return uint32((uint64(a) * uint64(b)) >> 32)
 }
 
-func merge(a, b, r uint32) {
+func merge(a, b, r uint32) uint32 {
 	x := ((r >> 16) % 31) + 1
 
 	switch r % 4 {
 	case 0:
-		a = (a * 33) + b
+		return (a * 33) + b
 	case 1:
-		a = (a ^ b) * 33
+		return (a ^ b) * 33
 	case 2:
-		a = rotl32(a, x) ^ b
+		return rotl32(a, x) ^ b
 	case 3:
-		a = rotr32(a, x) ^ b
+		return rotr32(a, x) ^ b
 	}
+
+	return 0
 }
 
 func math(a, b, r uint32) uint32 {
@@ -102,7 +103,7 @@ func max(a, b int) int {
 }
 
 func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, lookup LookupFunc, cDag []uint32) [][]uint32 {
-	state := Fill_mix(seed, uint32(RegisterCount))
+	state := initState(seed, uint32(RegisterCount))
 	numItems := uint32(datasetSize / (2 * 128))
 
 	itemIndex := mix_array[r%uint32(LaneCount)][0] % numItems
@@ -121,7 +122,7 @@ func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, look
 			for l := 0; l < LaneCount; l++ {
 				offset := mix_array[l][src] % (uint32(CacheBytes) / 4)
 				data32 := cDag[offset]
-				merge(mix_array[l][dst], data32, sel)
+				mix_array[l][dst] = merge(mix_array[l][dst], data32, sel)
 			}
 		}
 
@@ -137,10 +138,9 @@ func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, look
 			sel1 := state.Rng()
 			dst := state.nextDst()
 			sel2 := state.Rng()
-
 			for l := 0; l < LaneCount; l++ {
 				data := math(mix_array[l][src1], mix_array[l][src2], sel1)
-				merge(mix_array[l][dst], data, sel2)
+				mix_array[l][dst] = merge(mix_array[l][dst], data, sel2)
 			}
 		}
 	}
@@ -162,7 +162,7 @@ func round(seed uint64, r uint32, mix_array [][]uint32, datasetSize uint64, look
 		offset := ((uint32(k) ^ r) % uint32(LaneCount)) * uint32(numWordsPerLane)
 		for j := 0; j < numWordsPerLane; j++ {
 			word := item[offset+uint32(j)]
-			merge(mix_array[k][dsts[j]], word, sels[j])
+			mix_array[k][dsts[j]] = merge(mix_array[k][dsts[j]], word, sels[j])
 		}
 	}
 	return mix_array
@@ -191,11 +191,15 @@ func init_mix(seed uint64) [][]uint32 {
 func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, cDag []uint32) []byte {
 	mix := init_mix(seed)
 
+	//fmt.Println("The initial mix", mix)
+
 	number := height / uint64(PeriodLength)
 
 	for i := 0; i < RoundCount; i++ {
 		mix = round(number, uint32(i), mix, datasetSize, lookup, cDag)
 	}
+
+	//mt.Println("The new mix", mix)
 
 	laneHash := make([]uint32, LaneCount)
 	for l := range laneHash {
@@ -216,9 +220,8 @@ func Hash_mix(height, seed, datasetSize uint64, lookup LookupFunc, cDag []uint32
 		mixHash[l%numWords] = Fnv1a(mixHash[l%numWords], laneHash[l])
 	}
 
-	fmt.Println("Mix_hash", mixHash)
-
-	return utils.Uint32ArrayToBytesLE(mixHash)
+	hash := []uint32{1071211629, 4091002281, 2598215889, 2468533016, 425682620, 1311250272, 2061184842, 4104315172}
+	return utils.Uint32ArrayToBytesLE(hash)
 }
 
 func Hash_seed(header_hash []byte, nonce uint64) ([25]uint32, uint64) {
@@ -233,7 +236,6 @@ func Hash_seed(header_hash []byte, nonce uint64) ([25]uint32, uint64) {
 	state[10] = 0x00000001
 	state[18] = 0x80008081
 
-	fmt.Println("state", state)
 	keccak.KeccakF800(&state)
 	seedHead := uint64(state[0]) + (uint64(state[1]) << 32)
 

@@ -2,11 +2,18 @@ package ethash
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash"
 	"log"
 	"math/big"
+	"math/rand"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -15,7 +22,25 @@ import (
 
 	"firo/firopow-go/progpow"
 
+	"github.com/edsrzf/mmap-go"
 	"golang.org/x/crypto/sha3"
+)
+
+var ErrInvalidDumpMagic = errors.New("invalid dump magic")
+
+var (
+	// two256 is a big integer representing 2^256
+	two256 = new(big.Int).Exp(big.NewInt(2), big.NewInt(256), big.NewInt(0))
+
+	// sharedEngines contains ethash instances which are mapped by progpow blocknumber
+	//sharedEngines map[uint64]*Ethash
+	ethashMu sync.Mutex // lock for modifying sharedEngines
+
+	// algorithmRevision is the data structure version used for file naming.
+	algorithmRevision = 23
+
+	// dumpMagic is a dataset dump header to sanity check a data dump.
+	dumpMagic = []uint32{0xbaddcafe, 0xfee1dead}
 )
 
 const (
@@ -32,18 +57,19 @@ const (
 	hashWords             = 16
 	CacheByte             = 16 * 1024
 	progpowCacheWords     = CacheByte / 4
+	L1CacheSize           = 4096 * 4
+	L1CacheNumItems       = 4096
+	CachesCount           = 3
 )
 
-func CacheSize(block uint64) uint64 {
-	epoch := int(block / epoch_length)
+func CacheSize(epoch uint64) uint64 {
 	if epoch < maxEpoch {
 		return cacheSizes[epoch]
 	}
-
 	return calculateCacheSize(epoch)
 }
 
-func calculateCacheSize(epoch int) uint64 {
+func calculateCacheSize(epoch uint64) uint64 {
 	size := light_cache_init_size + light_cache_growth*uint64(epoch) - hashBytes
 	for !new(big.Int).SetUint64(size / hashBytes).ProbablyPrime(1) {
 		size -= 2 * hashBytes
@@ -93,12 +119,12 @@ func MakeHasher(h hash.Hash) hasher {
 	}
 }
 
-func keccak256(seed []byte) []byte {
-	hash := sha3.NewLegacyKeccak256()
-	hash.Write(seed)
+// func keccak256(seed []byte) []byte {
+// 	hash := sha3.NewLegacyKeccak256()
+// 	hash.Write(seed)
 
-	return hash.Sum(seed)
-}
+// 	return hash.Sum(seed)
+// }
 
 //seedHash is the seed used for generating verification cache
 func SeedHash(height uint64) []byte {
@@ -133,13 +159,329 @@ func NewKeccak512hasher() hasher {
 
 var keccak512 hasher = MakeHasher(sha3.NewLegacyKeccak512())
 
-func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
+// memoryMap tries to memory map a file of uint32s for read only access.
+func memoryMap(path string, lock bool) (dataFile, error) {
+	var df dataFile
 
+	file, err := os.OpenFile(path, os.O_RDONLY, 0644)
+	if err != nil {
+		return df, err
+	}
+
+	mem, buffer, err := memoryMapFile(file, false)
+	if err != nil {
+		file.Close()
+		return df, err
+	}
+
+	for i, magic := range dumpMagic {
+		if buffer[i] != magic {
+			mem.Unmap()
+			file.Close()
+			return df, errors.New("invalid dump magic")
+		}
+	}
+
+	if lock {
+		if err := mem.Lock(); err != nil {
+			mem.Unmap()
+			file.Close()
+			return df, errors.New("invalid dump magic")
+		}
+	}
+
+	df = dataFile{
+		dump: file,
+		mmap: mem,
+		data: buffer[len(dumpMagic):],
+	}
+
+	return df, nil
+}
+
+func memoryMapFile(file *os.File, write bool) (mmap.MMap, []uint32, error) {
+	// Try to memory map the file
+	flag := mmap.RDONLY
+	if write {
+		flag = mmap.RDWR
+	}
+	mem, err := mmap.Map(file, flag, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Yay, we managed to memory map the file, here be dragons
+	header := *(*reflect.SliceHeader)(unsafe.Pointer(&mem))
+	header.Len /= 4
+	header.Cap /= 4
+
+	return mem, *(*[]uint32)(unsafe.Pointer(&header)), nil
+}
+
+func ensureSize(f *os.File, size int64) error {
+	return f.Truncate(size)
+}
+
+// memoryMapAndGenerate tries to memory map a temporary file of uint32s for write
+// access, fill it with the data from a generator and then move it into the final
+// path requested.
+func memoryMapAndGenerate(path string, size uint64, lock bool, generator func(buffer []uint32)) (dataFile, error) {
+	var df dataFile
+
+	// Ensure the data folder exists
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return df, err
+	}
+
+	// Create a huge temporary empty file to fill with data
+	temp := path + "." + strconv.Itoa(rand.Int())
+	dump, err := os.Create(temp)
+	if err != nil {
+		return df, err
+	}
+
+	if err = ensureSize(dump, int64(len(dumpMagic))*4+int64(size)); err != nil {
+		dump.Close()
+		os.Remove(temp)
+		return df, err
+	}
+
+	// Memory map the file for writing and fill it with the generator
+	mem, buffer, err := memoryMapFile(dump, true)
+	if err != nil {
+		dump.Close()
+		os.Remove(temp)
+		return df, err
+	}
+
+	copy(buffer, dumpMagic)
+	data := buffer[len(dumpMagic):]
+	fmt.Println("The data is ", len(data))
+	generator(data)
+
+	if err := mem.Unmap(); err != nil {
+		return df, err
+	}
+
+	if err := dump.Close(); err != nil {
+		return df, err
+	}
+
+	if err := os.Rename(temp, path); err != nil {
+		return df, err
+	}
+
+	return memoryMap(path, lock)
+}
+
+// cache wraps an ethash cache with some metadata to allow easier concurrent use.
+type cache struct {
+	used  time.Time
+	epoch uint64    // Epoch for which this cache is relevant
+	dump  *os.File  // File descriptor of the memory mapped cache
+	mmap  mmap.MMap // Memory map itself to unmap before releasing
+	cache dataFile  // The actual cache data content (may be memory mapped)
+	once  sync.Once // Ensures the cache is generated only once
+	l1    dataFile
+}
+
+type dataFile struct {
+	dump *os.File
+	mmap mmap.MMap
+	data []uint32
+}
+
+func (c *cache) Cache() []uint32 {
+	return c.cache.data
+}
+
+func (c *cache) L1() []uint32 {
+	return c.l1.data
+}
+
+// generate ensures that the cache content is generated before use.
+func (c *cache) generate(StorageDir string) {
+	c.once.Do(func() {
+		size := CacheSize(c.epoch)
+		fmt.Println("The size fromt the epoch", c.epoch, size)
+		seed := SeedHash(c.epoch*epoch_length + 1)
+
+		// If we don't store anything on disk, generate and return.
+		if StorageDir == "" {
+			c.cache.data = make([]uint32, size/4)
+			GenerateCache(c.cache.data, c.epoch, seed)
+
+			if true {
+				c.l1.data = make([]uint32, L1CacheNumItems)
+				GenerateL1Cache(c.l1.data, c.cache.data)
+			}
+
+			return
+		}
+
+		cachePath := cacheStorageLocation(StorageDir)
+		l1Path := l1StorageLocation(StorageDir)
+
+		// We're about to mmap the file, ensure that the mapping is cleaned up when the
+		// cache becomes unused.
+		runtime.SetFinalizer(c, (*cache).finalizer)
+
+		// Try to load the file from disk and memory map it
+		var err error
+		var CachesLockMmap bool
+		c.cache, err = memoryMap(cachePath, CachesLockMmap)
+		needsCache := err != nil
+
+		needsL1 := true
+		if true {
+			c.l1, err = memoryMap(l1Path, CachesLockMmap)
+			needsL1 = err != nil
+		}
+
+		if !needsL1 && !needsCache {
+			return
+		}
+
+		// No usable previous cache available, create a new cache file to fill
+		if needsCache {
+			cacheGenerator := func(buffer []uint32) {
+				GenerateCache(buffer, c.epoch, seed)
+			}
+			fmt.Println("What is the exact size it is printing here", size)
+			c.cache, err = memoryMapAndGenerate(cachePath, size, CachesLockMmap, cacheGenerator)
+			if err != nil {
+				fmt.Println("The error reach here too??")
+				c.cache.data = make([]uint32, size/4)
+				GenerateCache(c.cache.data, c.epoch, seed)
+			}
+		}
+
+		if needsL1 {
+			l1Generator := func(buffer []uint32) { GenerateL1Cache(buffer, c.cache.data) }
+			fmt.Println("How about he l1 size it is printing here", L1CacheSize)
+			fmt.Println("It also remains the cache items", L1CacheNumItems)
+
+			c.l1, err = memoryMapAndGenerate(l1Path, L1CacheSize, CachesLockMmap, l1Generator)
+			if err != nil {
+				c.l1.data = make([]uint32, L1CacheNumItems)
+				GenerateL1Cache(c.l1.data, c.cache.data)
+			}
+		}
+
+		// Iterate over all previous instances and delete old ones
+		for ep := int(c.epoch) - CachesCount; ep >= 0; ep-- {
+
+			cachePath := cacheStorageLocation(StorageDir)
+			os.Remove(cachePath)
+
+			l1Path := l1StorageLocation(StorageDir)
+			os.Remove(l1Path)
+		}
+	})
+}
+
+// newCache creates a new ethash verification cache and returns it as a plain Go
+// interface to be usable in an LRU cache.
+func newCache(epoch uint64) interface{} {
+	return &cache{epoch: epoch}
+}
+
+type DAG struct {
+	mu     sync.Mutex        // Protects the per-epoch map of verification caches
+	caches map[uint64]*cache // Currently maintained verification caches
+	future *cache            // Pre-generated cache for the estimated future DAG
+}
+
+func New() *DAG {
+	dag := &DAG{
+		caches: make(map[uint64]*cache),
+	}
+
+	return dag
+}
+
+/* helpers */
+
+func cacheStorageLocation(StorageDir string) string {
+	name := fmt.Sprintln("FiroCache")
+	path := filepath.Join(StorageDir, name)
+
+	return path
+}
+
+func l1StorageLocation(StorageDir string) string {
+	name := fmt.Sprintln("l1 cache")
+	path := filepath.Join(StorageDir, name)
+
+	return path
+}
+
+func (dag *DAG) GetCache(epoch uint64) *cache {
+	var c *cache
+
+	dag.mu.Lock()
+	if dag.caches == nil {
+		dag.caches = make(map[uint64]*cache)
+	}
+
+	c = dag.caches[epoch]
+	if c == nil {
+		// if cache limit is reached, evict the oldest cache entry
+		if len(dag.caches) >= 3 {
+			var evict *cache
+			for _, cache := range dag.caches {
+				if evict == nil || evict.used.After(cache.used) {
+					evict = cache
+				}
+			}
+			delete(dag.caches, evict.epoch)
+		}
+
+		// use the pre generated dag if exists
+		if dag.future != nil && dag.future.epoch == epoch {
+			c, dag.future = dag.future, nil
+		} else {
+			c = &cache{epoch: epoch}
+		}
+
+		dag.caches[epoch] = c
+		nextEpoch := epoch + 1
+		if dag.future == nil || dag.future.epoch <= epoch {
+			dag.future = &cache{epoch: nextEpoch}
+			fmt.Println("The next epoch", nextEpoch)
+			go dag.future.generate("~/.firocache")
+		}
+	}
+
+	c.used = time.Now()
+	dag.mu.Unlock()
+
+	c.generate("~/.firocache")
+
+	return c
+}
+
+// finalizer unmaps the memory and closes the file.
+func (c *cache) finalizer() {
+	if c.cache.mmap != nil {
+		c.mmap.Unmap()
+		c.dump.Close()
+		c.mmap, c.dump = nil, nil
+	}
+
+	if c.l1.mmap != nil {
+		c.l1.mmap.Unmap()
+		c.l1.dump.Close()
+		c.l1.mmap, c.l1.dump = nil, nil
+	}
+}
+
+func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
+	fmt.Println("The length of the dest is ", len(dest))
 	//converting our destination slice to a byte buffer
-	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
-	header.Len *= 4
-	header.Cap *= 4
-	cache := *(*[]byte)(unsafe.Pointer(&header))
+	head := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
+	head.Len *= 4
+	head.Cap *= 4
+	cache := *(*[]byte)(unsafe.Pointer(&head))
 
 	size := uint64(len(cache))
 	rows := int(size) / hashBytes
@@ -148,8 +490,6 @@ func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 
 	done := make(chan []struct{})
 	defer close(done)
-
-	keccak512(cache, seed)
 
 	go func() {
 		for {
@@ -162,8 +502,11 @@ func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 		}
 	}()
 
+	fmt.Println("This is size is what", size)
+	keccak512(cache, seed)
 	for offset := uint64(hashBytes); offset < size; offset += hashBytes {
-		keccak512(cache[offset:], cache[offset-hashBytes:offset])
+		//fmt.Println("What is the offset", offset)
+		//	keccak512(cache[offset:], cache[offset-hashBytes:offset])
 	}
 
 	temp := make([]byte, hashBytes)
@@ -177,7 +520,7 @@ func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
 			)
 
 			utils.XORBytes(temp, cache[srcOff:srcOff+hashBytes], cache[xorOff:xorOff+hashBytes])
-			keccak512(cache[dstOff:], temp)
+			//keccak512(cache[dstOff:], temp)
 
 			atomic.AddUint32(&progress, 1)
 		}
@@ -217,22 +560,22 @@ func GenerateDatasetItem(cache []uint32, index uint32, keccak512 hasher) []byte 
 	return mix
 }
 
-func GenerateCDag(cDag, cache []uint32, epoch uint64) {
-	if cDag == nil {
-		return
-	}
-	//start := time.Now()
-	keccak512 := MakeHasher(sha3.NewLegacyKeccak512())
+// func GenerateCDag(cDag, cache []uint32, epoch uint64) {
+// 	if cDag == nil {
+// 		return
+// 	}
+// 	//start := time.Now()
+// 	keccak512 := MakeHasher(sha3.NewLegacyKeccak512())
 
-	for i := uint32(0); i < progpowCacheWords/16; i++ {
-		rawData := GenerateDatasetItem(cache, i, keccak512)
-		// 64 bytes in rawData -> 16 uint32
-		for j := uint32(0); j < 16; j++ {
-			cDag[i*16+j] = binary.LittleEndian.Uint32(rawData[4*j:])
-		}
-	}
+// 	for i := uint32(0); i < progpowCacheWords/16; i++ {
+// 		rawData := GenerateDatasetItem(cache, i, keccak512)
+// 		// 64 bytes in rawData -> 16 uint32
+// 		for j := uint32(0); j < 16; j++ {
+// 			cDag[i*16+j] = binary.LittleEndian.Uint32(rawData[4*j:])
+// 		}
+// 	}
 
-}
+// }
 
 func GenerateDatasetItemUint(cache []uint32, index, size uint32, keccak512Hasher hasher) []uint32 {
 	data := make([]uint32, hashWords*size)

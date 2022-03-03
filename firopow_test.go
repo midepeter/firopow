@@ -25,12 +25,6 @@ func TestVerify(t *testing.T) {
 		Height     uint64
 		Difficulty float64
 	}{
-		// {
-		// 	Header:     "5a085fb8be7e0f10cbeb45a1deda25abfef270e12a203c7dfb020aac0723fa7c",
-		// 	Nonce:      0xf3e95657f2470e38,
-		// 	Height:     265000,
-		// 	Difficulty: 5676.51423654,
-		// },
 		{
 			Header:     MustDecodeHex("2c128024a0274ec45f773fa878e0f9efc309ebc4864e63346931fb0a80ec9f1e"),
 			Nonce:      0xf63c14518f7a9067,
